@@ -7,7 +7,40 @@ on:
 
 jobs:
   build:
-    uses: ./.github/workflows/build-common.yml
+    name: Build
+    runs-on: ubuntu-latest
+    env:
+      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+    steps:
+      - name: Check out
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+
+      - name: Setup Python # This is for the build script
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Run build script
+        run: |
+          export HY_APP_PLATFORMS=linux/amd64,linux/arm64
+          python hyperbole.py build -r
+
+      - name: Generate hashes
+        run: |
+          for file in build/*; do
+            sha256sum $file >> build/hashes.txt
+          done
+
+      - name: Upload build directory
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-temp-${{ github.sha }}
+          path: build/
 
   publish:
     name: Publish
