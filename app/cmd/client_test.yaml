@@ -2,6 +2,17 @@ server: example.com
 
 auth: weak_ahh_password
 
+realm:
+  stunServers:
+    - stun1.example.com:3478
+    - stun2.example.com:3478
+  stunTimeout: 7s
+  punchTimeout: 9s
+  insecure: true
+  listenPorts: 40000-40002,41000
+  preferIPVersion: v6
+  fallbackTimeout: 1500ms
+
 transport:
   type: udp
   udp:

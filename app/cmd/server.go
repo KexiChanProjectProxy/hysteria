@@ -91,6 +91,9 @@ type serverConfigRealm struct {
 	PunchTimeout      time.Duration `mapstructure:"punchTimeout"`
 	HeartbeatInterval time.Duration `mapstructure:"heartbeatInterval"`
 	Insecure          bool          `mapstructure:"insecure"`
+	ListenPorts       string        `mapstructure:"listenPorts"`
+	PreferIPVersion   string        `mapstructure:"preferIPVersion"`
+	FallbackTimeout   time.Duration `mapstructure:"fallbackTimeout"`
 }
 
 type serverConfigObfsSalamander struct {
@@ -354,14 +357,23 @@ func (c *serverConfig) fillRealmConn(hyConfig *server.Config, addr *realm.Addr) 
 		zap.String("realm", addr.RealmID),
 		zap.String("realmServer", addr.HostPort),
 		zap.String("scheme", addr.RendezvousScheme))
-	listenAddr := &net.UDPAddr{}
-	if addr.LocalPort != 0 {
-		listenAddr.Port = addr.LocalPort
-	}
-	conn, err := correctnet.ListenUDP("udp", listenAddr)
+	listenOpts, err := makeRealmLocalUDPOptions(c.Realm.ListenPorts, c.Realm.PreferIPVersion, c.Realm.FallbackTimeout, addr.LocalPort)
 	if err != nil {
-		return configError{Field: "listen", Err: err}
+		return configError{Field: "realm", Err: err}
 	}
+	ctx := context.Background()
+	packetConn, localAddrs, err := openRealmUDPConn(ctx, listenOpts, func(listenAddr *net.UDPAddr) (net.PacketConn, error) {
+		return correctnet.ListenUDP("udp", listenAddr)
+	}, func(ctx context.Context, conn net.PacketConn) ([]netip.AddrPort, error) {
+		return realm.Discover(ctx, conn, realm.STUNConfig{
+			Servers: c.realmSTUNServers(addr),
+			Timeout: c.Realm.STUNTimeout,
+		})
+	})
+	if err != nil {
+		return configError{Field: "realm", Err: err}
+	}
+	conn := packetConn.(*net.UDPConn)
 	logger.Debug("realm server UDP socket opened",
 		zap.String("realm", addr.RealmID),
 		zap.String("local", conn.LocalAddr().String()))
@@ -371,13 +383,13 @@ func (c *serverConfig) fillRealmConn(hyConfig *server.Config, addr *realm.Addr) 
 		_ = conn.Close()
 		return configError{Field: "realm", Err: err}
 	}
-	packetConn, err := c.wrapServerPacketConn(punchConn, conn)
+	packetConn, err = c.wrapServerPacketConn(punchConn, conn)
 	if err != nil {
 		return err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	runtime, err := c.startRealmServerRuntime(ctx, cancel, addr, punchConn)
+	runtimeCtx, cancel := context.WithCancel(context.Background())
+	runtime, err := c.startRealmServerRuntime(runtimeCtx, cancel, addr, punchConn, localAddrs)
 	if err != nil {
 		cancel()
 		_ = packetConn.Close()
@@ -424,7 +436,7 @@ func resolveServerListenAddr(listenAddr string) (*net.UDPAddr, eUtils.PortUnion,
 	return uAddr, portUnion, err
 }
 
-func (c *serverConfig) startRealmServerRuntime(ctx context.Context, cancel context.CancelFunc, addr *realm.Addr, punchConn *realm.PunchPacketConn) (*realmServerRuntime, error) {
+func (c *serverConfig) startRealmServerRuntime(ctx context.Context, cancel context.CancelFunc, addr *realm.Addr, punchConn *realm.PunchPacketConn, initialAddrs []netip.AddrPort) (*realmServerRuntime, error) {
 	stunServers := c.realmSTUNServers(addr)
 	rClient, err := realm.NewClientFromAddr(addr, c.realmHTTPClient())
 	if err != nil {
@@ -442,9 +454,13 @@ func (c *serverConfig) startRealmServerRuntime(ctx context.Context, cancel conte
 		stunServers: stunServers,
 		puncher:     puncher,
 		config:      c.Realm,
+		addrs:       append([]netip.AddrPort(nil), initialAddrs...),
+		addrsAt:     time.Now(),
 	}
-	if _, _, err := rt.refreshAddrsDirect(ctx); err != nil {
-		return nil, configError{Field: "realm.stun", Err: err}
+	if len(initialAddrs) == 0 {
+		if _, _, err := rt.refreshAddrsDirect(ctx); err != nil {
+			return nil, configError{Field: "realm.stun", Err: err}
+		}
 	}
 	initialSession, err := rt.register(ctx)
 	if err != nil {

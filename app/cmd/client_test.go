@@ -23,6 +23,15 @@ func TestClientConfig(t *testing.T) {
 	assert.Equal(t, config, clientConfig{
 		Server: "example.com",
 		Auth:   "weak_ahh_password",
+		Realm: clientConfigRealm{
+			STUNServers:     []string{"stun1.example.com:3478", "stun2.example.com:3478"},
+			STUNTimeout:     7 * time.Second,
+			PunchTimeout:    9 * time.Second,
+			Insecure:        true,
+			ListenPorts:     "40000-40002,41000",
+			PreferIPVersion: "v6",
+			FallbackTimeout: 1500 * time.Millisecond,
+		},
 		Transport: clientConfigTransport{
 			Type: "udp",
 			UDP: clientConfigTransportUDP{

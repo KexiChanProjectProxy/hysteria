@@ -24,6 +24,16 @@ func TestServerConfig(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, config, serverConfig{
 		Listen: ":8443",
+		Realm: serverConfigRealm{
+			STUNServers:       []string{"stun1.example.com:3478", "stun2.example.com:3478"},
+			STUNTimeout:       8 * time.Second,
+			PunchTimeout:      10 * time.Second,
+			HeartbeatInterval: 12 * time.Second,
+			Insecure:          true,
+			ListenPorts:       "50000-50003",
+			PreferIPVersion:   "v4",
+			FallbackTimeout:   2 * time.Second,
+		},
 		Obfs: serverConfigObfs{
 			Type: "salamander",
 			Salamander: serverConfigObfsSalamander{

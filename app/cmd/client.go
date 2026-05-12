@@ -92,10 +92,13 @@ type clientConfig struct {
 }
 
 type clientConfigRealm struct {
-	STUNServers  []string      `mapstructure:"stunServers"`
-	STUNTimeout  time.Duration `mapstructure:"stunTimeout"`
-	PunchTimeout time.Duration `mapstructure:"punchTimeout"`
-	Insecure     bool          `mapstructure:"insecure"`
+	STUNServers      []string      `mapstructure:"stunServers"`
+	STUNTimeout      time.Duration `mapstructure:"stunTimeout"`
+	PunchTimeout     time.Duration `mapstructure:"punchTimeout"`
+	Insecure         bool          `mapstructure:"insecure"`
+	ListenPorts      string        `mapstructure:"listenPorts"`
+	PreferIPVersion  string        `mapstructure:"preferIPVersion"`
+	FallbackTimeout  time.Duration `mapstructure:"fallbackTimeout"`
 }
 
 type clientConfigTransportUDP struct {
@@ -589,15 +592,23 @@ func (c *clientConfig) realmConfig(addr *realm.Addr) (*client.Config, error) {
 		hyConfig.TLSConfig.ServerName = addr.Host
 	}
 
+	listenOpts, err := makeRealmLocalUDPOptions(c.Realm.ListenPorts, c.Realm.PreferIPVersion, c.Realm.FallbackTimeout, addr.LocalPort)
+	if err != nil {
+		return nil, configError{Field: "realm", Err: err}
+	}
 	so, err := c.socketOptions()
 	if err != nil {
 		return nil, err
 	}
-	var listenAddr *net.UDPAddr
-	if addr.LocalPort != 0 {
-		listenAddr = &net.UDPAddr{Port: addr.LocalPort}
-	}
-	baseConn, err := so.ListenUDPAddr(listenAddr)
+	ctx := context.Background()
+	baseConn, localAddrs, err := openRealmUDPConn(ctx, listenOpts, func(listenAddr *net.UDPAddr) (net.PacketConn, error) {
+		return so.ListenUDPAddr(listenAddr)
+	}, func(ctx context.Context, conn net.PacketConn) ([]netip.AddrPort, error) {
+		return realm.Discover(ctx, conn, realm.STUNConfig{
+			Servers: c.realmSTUNServers(addr),
+			Timeout: c.Realm.STUNTimeout,
+		})
+	})
 	if err != nil {
 		return nil, configError{Field: "realm", Err: err}
 	}
@@ -611,23 +622,14 @@ func (c *clientConfig) realmConfig(addr *realm.Addr) (*client.Config, error) {
 		}
 	}()
 
-	ctx := context.Background()
 	stunServers := c.realmSTUNServers(addr)
 	logger.Debug("realm client STUN discovery started",
 		zap.String("realm", addr.RealmID),
 		zap.Strings("stunServers", stunServers))
-	stunStart := time.Now()
-	localAddrs, err := realm.Discover(ctx, baseConn, realm.STUNConfig{
-		Servers: stunServers,
-		Timeout: c.Realm.STUNTimeout,
-	})
-	if err != nil {
-		return nil, configError{Field: "realm.stun", Err: err}
-	}
 	logger.Debug("realm client STUN discovery completed",
 		zap.String("realm", addr.RealmID),
 		zap.Strings("addresses", addrPortStrings(localAddrs)),
-		zap.String("duration", formatLogDuration(time.Since(stunStart))))
+		zap.String("duration", "included in socket selection"))
 	meta, err := realm.NewPunchMetadata()
 	if err != nil {
 		return nil, configError{Field: "realm", Err: err}
